@@ -1,0 +1,83 @@
+
+worker_processes  1;
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+
+    lua_package_path "/home/varsha/nginx/lua-resty-mysql-0.19/lib/?.lua;;";
+    server {
+        listen       80;
+        server_name  localhost;
+
+        location / {
+                resolver 8.8.4.4;
+                set $target '';
+
+               access_by_lua '
+                                local key = ngx.var.http_user_agent
+                                local quoted_key = ngx.quote_sql_str(key)
+                local mysql = require "resty.mysql"
+                local db, err = mysql:new()
+                if not db then
+                    ngx.log(ngx.ERR,"failed to instantiate mysql: ", err)
+                    return
+                end
+
+                db:set_timeout(1000) -- 1 sec
+
+                local ok, err, errcode, sqlstate = db:connect{
+                    host = "127.0.0.1",
+                    port = 3306,
+                    database = "ngx_test",
+                    user = "ngx_test",
+                    password = "ngx_test",
+                    charset = "utf8",
+                    max_packet_size = 1024 * 1024,
+                }
+
+                if not ok then
+                    ngx.log(ngx.ERR,"failed to connect: ", err, ": ", errcode, " ", sqlstate)
+                    return
+                end
+
+
+                        local res, err, errcode, sqlstate =
+                    db:query("select website from user where name = " .. quoted_key)
+                if not res then
+                    ngx.log(ngx.ERR,"bad result: ", err, ": ", errcode, ": ", sqlstate, ".")
+                    return
+                end
+
+                for i,row in ipairs(res) do
+                                for name,id in pairs(row) do
+                                        if id == "old" then
+                                                ngx.var.target = "apache.org"
+                                        elseif id == "new" then
+                                                ngx.var.target = "www.google.com"
+                                        end
+                                end
+                        end
+
+
+                local ok, err = db:set_keepalive(10000, 100)
+                if not ok then
+                    return
+                end
+
+              ';
+                proxy_pass http://$target;
+
+        }
+
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+}
